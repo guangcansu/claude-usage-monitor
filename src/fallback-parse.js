@@ -2,11 +2,15 @@ const PERCENT_USED_BLOCK = /^(\d{1,3})%\s+used$/i;
 const SPENT_BLOCK = /^\$(\d+(?:\.\d{1,2})?)\s+spent$/i;
 const TIME = '(?:1[0-2]|0?[1-9]):[0-5]\\d\\s*(?:AM|PM)';
 const WEEKDAY = '(?:Monday|Tuesday|Wednesday|Thursday|Friday|Saturday|Sunday)';
+const SHORT_WEEKDAY = '(?:Mon|Tue|Wed|Thu|Fri|Sat|Sun)';
 const MONTH = '(?:January|February|March|April|May|June|July|August|September|October|November|December)';
+const SHORT_MONTH = '(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec)';
+const DURATION = '(?:\\d{1,3}\\s+(?:minutes?|hours?|days?|weeks?)|\\d{1,3}\\s+hr\\s+\\d{1,3}\\s+min)';
 const RESET_BLOCK = new RegExp(
-  `^Resets?\\s+(?:in\\s+\\d{1,3}\\s+(?:minutes?|hours?|days?|weeks?)|at\\s+${TIME}|on\\s+(?:${WEEKDAY}(?:\\s+at\\s+${TIME})?|${MONTH}\\s+\\d{1,2}(?:,\\s*\\d{4})?(?:\\s+at\\s+${TIME})?))$`,
+  `^Resets?\\s+(?:in\\s+${DURATION}|at\\s+${TIME}|on\\s+(?:${WEEKDAY}(?:\\s+at\\s+${TIME})?|${MONTH}\\s+\\d{1,2}(?:,\\s*\\d{4})?(?:\\s+at\\s+${TIME})?)|${SHORT_WEEKDAY}\\s+${TIME}|${SHORT_MONTH}\\s+\\d{1,2})$`,
   'i',
 );
+const MAX_ANCESTOR_LAYERS = 6;
 
 function trimmedBlock(value) {
   return typeof value === 'string' ? value.trim() : '';
@@ -43,4 +47,16 @@ export function parseAdjacentUsageBlocks(blocks) {
   }
 
   return { usedPercent, resetLabel, spent };
+}
+
+export function selectNearestUsageMetric(ancestorLayers) {
+  if (!Array.isArray(ancestorLayers)) return null;
+
+  for (const blocks of ancestorLayers.slice(0, MAX_ANCESTOR_LAYERS)) {
+    if (!Array.isArray(blocks)) continue;
+    const metric = parseAdjacentUsageBlocks(blocks);
+    if (metric.usedPercent !== null || metric.spent !== null) return metric;
+  }
+
+  return null;
 }

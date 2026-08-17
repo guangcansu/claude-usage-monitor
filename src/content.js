@@ -1,4 +1,4 @@
-import { parseAdjacentUsageBlocks } from './fallback-parse.js';
+import { selectNearestUsageMetric } from './fallback-parse.js';
 
 const GATE_TEXT = 'Plan usage limits';
 const LABELS = Object.freeze({
@@ -22,7 +22,9 @@ const EXCLUDED_SELECTOR = [
   'select',
   'button',
   'form',
-  '[contenteditable="true"]',
+  '[contenteditable]:not([contenteditable="false" i])',
+  '[hidden]',
+  '[aria-hidden="true" i]',
   '[role="textbox"]',
   '[data-testid*="composer" i]',
   '[data-testid*="conversation" i]',
@@ -50,16 +52,21 @@ function usageRoot() {
   });
 }
 
-function nearbyBlocks(block) {
-  const parent = block.parentElement;
-  if (!parent || !isVisible(parent)) return [directVisibleText(block)];
-  const siblings = Array.from(parent.children);
-  const index = siblings.indexOf(block);
-  return siblings
-    .slice(index, index + 4)
+function descendantTextBlocks(element) {
+  return [element, ...element.querySelectorAll(BLOCK_SELECTOR)]
     .map(directVisibleText)
-    .filter(Boolean)
-    .slice(0, 4);
+    .filter(Boolean);
+}
+
+function ancestorTextLayers(root, block) {
+  const layers = [];
+  let ancestor = block.parentElement;
+  while (ancestor && root.contains(ancestor) && layers.length < 6) {
+    layers.push(descendantTextBlocks(ancestor));
+    if (ancestor === root) break;
+    ancestor = ancestor.parentElement;
+  }
+  return layers;
 }
 
 function extractBlock(root, label) {
@@ -69,9 +76,7 @@ function extractBlock(root, label) {
   });
   if (!labelBlock) return null;
 
-  const metric = parseAdjacentUsageBlocks(nearbyBlocks(labelBlock));
-  if (metric.usedPercent === null && metric.resetLabel === null && metric.spent === null) return null;
-  return metric;
+  return selectNearestUsageMetric(ancestorTextLayers(root, labelBlock));
 }
 
 function collectFallbackPayload(root) {
