@@ -1,4 +1,5 @@
 import { selectNearestUsageMetric } from './fallback-parse.js';
+import { hasVisibleOpacity } from './content-visibility.js';
 
 const GATE_TEXT = 'Plan usage limits';
 const LABELS = Object.freeze({
@@ -33,7 +34,10 @@ const EXCLUDED_SELECTOR = [
 function isVisible(element) {
   if (!(element instanceof Element) || element.closest(EXCLUDED_SELECTOR)) return false;
   const style = window.getComputedStyle(element);
-  return style.display !== 'none' && style.visibility !== 'hidden' && element.getClientRects().length > 0;
+  return style.display !== 'none'
+    && style.visibility !== 'hidden'
+    && element.getClientRects().length > 0
+    && hasVisibleOpacity(element, (candidate) => window.getComputedStyle(candidate));
 }
 
 function directVisibleText(element) {
