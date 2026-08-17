@@ -1,0 +1,75 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <title>Claude Usage Monitor</title>
+    <link rel="stylesheet" href="popup.css">
+  </head>
+  <body>
+    <div class="popup-shell" data-state="loading">
+      <header class="popup-header">
+        <div>
+          <p class="eyebrow">Private usage view</p>
+          <h1>Claude Usage</h1>
+        </div>
+        <div class="header-actions">
+          <span id="status-pill" class="status-pill" aria-live="polite">Loading</span>
+          <button id="refresh-button" class="icon-button" type="button" aria-label="Refresh usage" title="Refresh usage">
+            <span aria-hidden="true">↻</span>
+          </button>
+        </div>
+      </header>
+
+      <p id="status-message" class="status-message" aria-live="polite">Checking your latest usage…</p>
+
+      <main aria-label="Usage details">
+        <section class="usage-row" data-metric="session" aria-labelledby="session-title">
+          <div class="row-heading">
+            <h2 id="session-title">Current session</h2>
+            <p id="session-value" class="metric-value">—</p>
+          </div>
+          <div class="progress-track" role="progressbar" aria-labelledby="session-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="session-progress" class="progress-fill"></div>
+          </div>
+          <p id="session-detail" class="metric-detail">Unavailable</p>
+        </section>
+
+        <section class="usage-row" data-metric="weekly" aria-labelledby="weekly-title">
+          <div class="row-heading">
+            <h2 id="weekly-title">Weekly limits</h2>
+            <p id="weekly-value" class="metric-value">—</p>
+          </div>
+          <div class="progress-track" role="progressbar" aria-labelledby="weekly-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="weekly-progress" class="progress-fill"></div>
+          </div>
+          <p id="weekly-detail" class="metric-detail">Unavailable</p>
+        </section>
+
+        <section class="usage-row" data-metric="credits" aria-labelledby="credits-title">
+          <div class="row-heading">
+            <h2 id="credits-title">Usage credits</h2>
+            <p id="credits-value" class="metric-value">—</p>
+          </div>
+          <div class="progress-track" role="progressbar" aria-labelledby="credits-title" aria-valuemin="0" aria-valuemax="100" aria-valuenow="0">
+            <div id="credits-progress" class="progress-fill"></div>
+          </div>
+          <p id="credits-detail" class="metric-detail">Unavailable</p>
+        </section>
+      </main>
+
+      <footer class="popup-footer">
+        <p id="freshness" class="freshness">Checking for usage data…</p>
+        <div class="context-actions">
+          <button id="sign-in-button" class="text-button" type="button">Sign in to Claude</button>
+          <button id="settings-button" class="text-button" type="button">Open Usage settings</button>
+          <label class="demo-toggle" for="demo-toggle">
+            <input id="demo-toggle" type="checkbox">
+            <span>Show demo data</span>
+          </label>
+        </div>
+      </footer>
+    </div>
+    <script type="module" src="popup.js"></script>
+  </body>
+</html>
