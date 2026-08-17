@@ -7,7 +7,7 @@ Claude Usage Monitor is a local, unpacked Chrome extension that presents a compa
 1. In Chrome, open `chrome://extensions`.
 2. Enable **Developer mode**.
 3. Select **Load unpacked**.
-4. Select this absolute directory: `C:\Users\User\Documents\Playground\.worktrees\claude-usage-monitor\claude-usage-monitor`.
+4. Select the absolute path to your own cloned `claude-usage-monitor` directory (the folder containing `manifest.json`).
 5. Pin **Claude Usage Monitor** from Chrome's Extensions menu.
 6. Sign in at [https://claude.ai](https://claude.ai).
 7. Open the extension and click **Refresh**.
