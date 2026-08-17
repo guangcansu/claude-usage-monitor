@@ -67,6 +67,10 @@ function refreshFailure(state) {
   return state.status !== 'ready' && state.status !== 'partial';
 }
 
+function isAuthoritativeApiState(state) {
+  return state?.source === 'api' && state.stale !== true && !refreshFailure(state);
+}
+
 export function createBackgroundController({ chromeApi, fetchImpl, collectUsage = collectClaudeUsage, now = () => new Date() }) {
   let inFlightRefresh = null;
   let commitQueue = Promise.resolve();
@@ -127,8 +131,10 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
   async function applyPageFallback(payload) {
     const state = fallbackState(payload, now());
     if (!state) return { ok: false };
+    const cachedApiState = await readUsageState();
     const apiState = await (inFlightRefresh ?? refreshUsage());
     if (apiState && !refreshFailure(apiState)) return { ok: false, state: apiState };
+    if (isAuthoritativeApiState(cachedApiState)) return { ok: false, state: apiState ?? cachedApiState };
 
     return enqueueCommit(async () => {
       const latestApiState = await waitForInFlightRefresh();

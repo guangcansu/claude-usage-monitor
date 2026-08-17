@@ -129,6 +129,21 @@ test('keeps a fresh API result when fallback starts the API refresh', async () =
   assert.equal(chromeApi.stored.usageState.items.session.usedPercent, 45);
 });
 
+test('keeps a stored ready API result when the fallback-triggered refresh is unavailable', async () => {
+  const cached = makeEmptyState('ready', null, new Date('2026-08-17T18:00:00.000Z'));
+  cached.source = 'api';
+  cached.items.session = { id: 'session', label: 'Current session', usedPercent: 45, remainingPercent: 55, resetsAt: null, resetLabel: null };
+  const chromeApi = makeChrome(cached);
+  const unavailable = makeEmptyState('unsupported', 'USAGE_SHAPE_UNRECOGNIZED', new Date('2026-08-17T18:01:00.000Z'));
+  const controller = createBackgroundController({ chromeApi, collectUsage: async () => unavailable });
+
+  const result = await controller.applyPageFallback({ session: { usedPercent: 10, resetLabel: 'Resets in 1 hour' } });
+
+  assert.equal(result.ok, false);
+  assert.equal(chromeApi.stored.usageState.source, 'api');
+  assert.equal(chromeApi.stored.usageState.items.session.usedPercent, 45);
+});
+
 test('contains rejected install work inside the registered event handler', async () => {
   const installed = [];
   const chromeApi = {
