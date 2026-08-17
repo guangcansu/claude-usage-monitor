@@ -1,13 +1,17 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 
-import { createBackgroundController, fallbackState, registerBackground } from '../src/background.js';
+import * as background from '../src/background.js';
 import { makeEmptyState } from '../src/shared/model.js';
+
+const { createBackgroundController, fallbackState, registerBackground } = background;
 
 function makeChrome(initialState = null) {
   const stored = { usageState: initialState };
+  const badge = { texts: [], colors: [] };
   return {
     stored,
+    badge,
     storage: {
       local: {
         get: async (key) => ({ [key]: stored[key] }),
@@ -15,8 +19,8 @@ function makeChrome(initialState = null) {
       },
     },
     action: {
-      setBadgeText: async () => {},
-      setBadgeBackgroundColor: async () => {},
+      setBadgeText: async (value) => badge.texts.push(value),
+      setBadgeBackgroundColor: async (value) => badge.colors.push(value),
     },
   };
 }
@@ -38,6 +42,111 @@ test('revalidates fallback reset labels before persistence', () => {
   }, new Date('2026-08-17T18:00:00.000Z'));
 
   assert.equal(state.items.session.resetLabel, null);
+});
+
+test('purely enriches only missing API reset fields from normalized page data', () => {
+  const api = makeEmptyState('ready', 'API_DIAGNOSTIC', new Date('2026-08-17T18:00:00.000Z'));
+  api.source = 'api';
+  api.items.session = {
+    id: 'session',
+    label: 'Current session',
+    usedPercent: 45,
+    remainingPercent: 55,
+    resetsAt: '2026-08-17T19:00:00Z',
+    resetLabel: 'Resets in 1 hour',
+  };
+  api.credits = {
+    usedPercent: 56,
+    remainingPercent: 44,
+    spent: 28.19,
+    limit: 50,
+    currency: 'USD',
+    resetsAt: null,
+    resetLabel: null,
+  };
+  const original = structuredClone(api);
+  const page = fallbackState(
+    {
+      session: { usedPercent: 99, resetLabel: 'Resets in 2 hours' },
+      credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 1' },
+    },
+    new Date('2026-08-17T18:05:00.000Z'),
+  );
+
+  assert.equal(typeof background.enrichApiStateWithPageFallback, 'function');
+  const enriched = background.enrichApiStateWithPageFallback(api, page);
+
+  assert.deepEqual(api, original);
+  assert.deepEqual(enriched, {
+    ...original,
+    credits: { ...original.credits, resetLabel: 'Resets Sep 1' },
+  });
+});
+
+test('does not overwrite a non-null API reset timestamp or label with page reset data', () => {
+  const api = makeEmptyState('partial', null, new Date('2026-08-17T18:00:00.000Z'));
+  api.source = 'api';
+  api.credits = {
+    usedPercent: 56,
+    remainingPercent: 44,
+    spent: 28.19,
+    limit: 50,
+    currency: 'USD',
+    resetsAt: '2026-09-01T00:00:00Z',
+    resetLabel: 'API reset',
+  };
+  const page = fallbackState(
+    { credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 2' } },
+    new Date('2026-08-17T18:05:00.000Z'),
+  );
+
+  assert.equal(typeof background.enrichApiStateWithPageFallback, 'function');
+  assert.deepEqual(background.enrichApiStateWithPageFallback(api, page), api);
+});
+
+test('persists and returns API credits enriched with a page reset label through the badge commit path', async () => {
+  const live = makeEmptyState('ready', 'API_DIAGNOSTIC', new Date('2026-08-17T18:00:00.000Z'));
+  live.source = 'api';
+  live.items.session = {
+    id: 'session',
+    label: 'Current session',
+    usedPercent: 45,
+    remainingPercent: 55,
+    resetsAt: null,
+    resetLabel: null,
+  };
+  live.items.weekly = {
+    id: 'weekly',
+    label: 'Weekly limits',
+    usedPercent: 27,
+    remainingPercent: 73,
+    resetsAt: null,
+    resetLabel: null,
+  };
+  live.credits = {
+    usedPercent: 56,
+    remainingPercent: 44,
+    spent: 28.19,
+    limit: 50,
+    currency: 'USD',
+    resetsAt: null,
+    resetLabel: null,
+  };
+  const chromeApi = makeChrome(live);
+  const controller = createBackgroundController({ chromeApi, collectUsage: async () => live });
+
+  const result = await controller.applyPageFallback({
+    credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 1' },
+  });
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.state, chromeApi.stored.usageState);
+  assert.deepEqual(chromeApi.stored.usageState, {
+    ...live,
+    credits: { ...live.credits, resetLabel: 'Resets Sep 1' },
+  });
+  assert.deepEqual(chromeApi.badge.texts.at(-1), { text: '55' });
+  assert.equal(chromeApi.badge.colors.length, chromeApi.badge.texts.length);
 });
 
 test('deduplicates concurrent API refreshes and does not let a fallback overwrite live API data', async () => {

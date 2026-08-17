@@ -46,8 +46,10 @@ function normalizeUsageItem(raw, id, label) {
   };
 }
 
-function normalizeAmount(value) {
-  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+function normalizeMinorAmount(value) {
+  return typeof value === 'number' && Number.isFinite(value) && Number.isInteger(value) && value >= 0
+    ? value / 100
+    : null;
 }
 
 function normalizeCurrency(value) {
@@ -60,8 +62,8 @@ function normalizeCredits(raw) {
   if (enabled !== true) return null;
 
   const usedPercent = normalizePercent(firstValue(raw, ['utilization', 'used_percent', 'usedPercent']));
-  const spent = normalizeAmount(firstValue(raw, ['used_credits', 'usedCredits']));
-  const limit = normalizeAmount(firstValue(raw, ['monthly_limit', 'monthlyLimit']));
+  const spent = normalizeMinorAmount(firstValue(raw, ['used_credits', 'usedCredits']));
+  const limit = normalizeMinorAmount(firstValue(raw, ['monthly_limit', 'monthlyLimit']));
   const currency = normalizeCurrency(firstValue(raw, ['currency']));
 
   return {

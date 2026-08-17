@@ -29,8 +29,8 @@ test('normalizes session, weekly, and enabled extra usage metrics', () => {
       extra_usage: {
         is_enabled: true,
         utilization: 56,
-        used_credits: 28.19,
-        monthly_limit: 50,
+        used_credits: 2819,
+        monthly_limit: 5000,
         currency: 'USD',
         resets_at: '2026-09-01T00:00:00Z',
       },
@@ -53,6 +53,42 @@ test('normalizes session, weekly, and enabled extra usage metrics', () => {
   assert.equal(state.credits.limit, 50);
   assert.equal(state.credits.currency, 'USD');
   assert.equal(state.credits.resetsAt, '2026-09-01T00:00:00Z');
+});
+
+test('converts camelCase integer minor-unit credit amounts to major currency units', () => {
+  const state = normalizeUsage(
+    {
+      extraUsage: {
+        isEnabled: true,
+        usedCredits: 2819,
+        monthlyLimit: 5000,
+      },
+    },
+    COLLECTED_AT,
+  );
+
+  assert.equal(state.credits.spent, 28.19);
+  assert.equal(state.credits.limit, 50);
+});
+
+test('rejects invalid minor-unit credit amounts without guessing units from magnitude', () => {
+  for (const invalid of [-1, Number.POSITIVE_INFINITY, '2819', 28.19]) {
+    const state = normalizeUsage(
+      {
+        extra_usage: {
+          is_enabled: true,
+          utilization: 56,
+          used_credits: invalid,
+          monthly_limit: invalid,
+        },
+      },
+      COLLECTED_AT,
+    );
+
+    assert.equal(state.credits.spent, null);
+    assert.equal(state.credits.limit, null);
+    assert.equal(state.credits.usedPercent, 56);
+  }
 });
 
 test('supports camelCase reset fields and preserves only parseable timestamps', () => {
@@ -120,8 +156,8 @@ test('does not infer that malformed extra-usage enable flags mean enabled', () =
         extra_usage: {
           is_enabled: isEnabled,
           utilization: 56,
-          used_credits: 28.19,
-          monthly_limit: 50,
+          used_credits: 2819,
+          monthly_limit: 5000,
         },
       },
       COLLECTED_AT,

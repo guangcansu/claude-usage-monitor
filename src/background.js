@@ -71,6 +71,35 @@ function isAuthoritativeApiState(state) {
   return state?.source === 'api' && state.stale !== true && !refreshFailure(state);
 }
 
+function enrichResetFields(apiValue, pageValue) {
+  if (!isRecord(apiValue) || !isRecord(pageValue)) return apiValue;
+  const resetsAt = apiValue.resetsAt ?? pageValue.resetsAt ?? null;
+  const resetLabel = apiValue.resetLabel ?? pageValue.resetLabel ?? null;
+  if (resetsAt === apiValue.resetsAt && resetLabel === apiValue.resetLabel) return apiValue;
+  return { ...apiValue, resetsAt, resetLabel };
+}
+
+export function enrichApiStateWithPageFallback(apiState, pageState) {
+  if (!isAuthoritativeApiState(apiState) || pageState?.source !== 'page') return apiState;
+
+  const session = enrichResetFields(apiState.items?.session, pageState.items?.session);
+  const weekly = enrichResetFields(apiState.items?.weekly, pageState.items?.weekly);
+  const credits = enrichResetFields(apiState.credits, pageState.credits);
+  if (
+    session === apiState.items?.session &&
+    weekly === apiState.items?.weekly &&
+    credits === apiState.credits
+  ) {
+    return apiState;
+  }
+
+  return {
+    ...apiState,
+    items: { session, weekly },
+    credits,
+  };
+}
+
 export function createBackgroundController({ chromeApi, fetchImpl, collectUsage = collectClaudeUsage, now = () => new Date() }) {
   let inFlightRefresh = null;
   let commitQueue = Promise.resolve();
@@ -128,20 +157,38 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
     return refresh ? refresh : null;
   }
 
+  async function commitApiEnrichment(apiState, pageState) {
+    return enqueueCommit(async () => {
+      const storedState = await readUsageState();
+      const currentApiState = isAuthoritativeApiState(storedState) ? storedState : apiState;
+      const enrichedState = enrichApiStateWithPageFallback(currentApiState, pageState);
+      if (enrichedState !== currentApiState) await saveUsageState(enrichedState);
+      return enrichedState;
+    });
+  }
+
   async function applyPageFallback(payload) {
     const state = fallbackState(payload, now());
     if (!state) return { ok: false };
     const cachedApiState = await readUsageState();
     const apiState = await (inFlightRefresh ?? refreshUsage());
-    if (apiState && !refreshFailure(apiState)) return { ok: false, state: apiState };
+    if (apiState && !refreshFailure(apiState)) {
+      return { ok: false, state: await commitApiEnrichment(apiState, state) };
+    }
     if (isAuthoritativeApiState(cachedApiState)) return { ok: false, state: apiState ?? cachedApiState };
 
     return enqueueCommit(async () => {
       const latestApiState = await waitForInFlightRefresh();
-      if (latestApiState && !refreshFailure(latestApiState)) return { ok: false, state: latestApiState };
+      if (latestApiState && !refreshFailure(latestApiState)) {
+        const enrichedState = enrichApiStateWithPageFallback(latestApiState, state);
+        if (enrichedState !== latestApiState) await saveUsageState(enrichedState);
+        return { ok: false, state: enrichedState };
+      }
       const storedState = await readUsageState();
       if (storedState?.source === 'api' && !refreshFailure(storedState)) {
-        return { ok: false, state: storedState };
+        const enrichedState = enrichApiStateWithPageFallback(storedState, state);
+        if (enrichedState !== storedState) await saveUsageState(enrichedState);
+        return { ok: false, state: enrichedState };
       }
       await saveUsageState(state);
       return { ok: true, state };
