@@ -1,3 +1,5 @@
+import { parseAdjacentUsageBlocks } from './fallback-parse.js';
+
 const GATE_TEXT = 'Plan usage limits';
 const LABELS = Object.freeze({
   session: 'Current session',
@@ -48,35 +50,16 @@ function usageRoot() {
   });
 }
 
-function nearbyText(block) {
+function nearbyBlocks(block) {
   const parent = block.parentElement;
-  if (!parent || !isVisible(parent)) return directVisibleText(block);
+  if (!parent || !isVisible(parent)) return [directVisibleText(block)];
   const siblings = Array.from(parent.children);
   const index = siblings.indexOf(block);
   return siblings
-    .slice(Math.max(0, index - 1), index + 3)
+    .slice(index, index + 4)
     .map(directVisibleText)
     .filter(Boolean)
-    .join(' ');
-}
-
-function percentUsed(text) {
-  const match = text.match(/\b(\d{1,3})%\s+used\b/i);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
-}
-
-function resetLabel(text) {
-  const match = text.match(/\b(resets?\s+(?:in|at|on)\s+[^.\n]{1,80})/i);
-  return match ? match[1].trim() : null;
-}
-
-function spentAmount(text) {
-  const match = text.match(/\$(\d+(?:\.\d{1,2})?)\s+spent\b/i);
-  if (!match) return null;
-  const value = Number(match[1]);
-  return Number.isFinite(value) && value >= 0 ? value : null;
+    .slice(0, 4);
 }
 
 function extractBlock(root, label) {
@@ -86,12 +69,9 @@ function extractBlock(root, label) {
   });
   if (!labelBlock) return null;
 
-  const text = nearbyText(labelBlock);
-  const usedPercent = percentUsed(text);
-  const reset = resetLabel(text);
-  const spent = spentAmount(text);
-  if (usedPercent === null && reset === null && spent === null) return null;
-  return { usedPercent, resetLabel: reset, spent };
+  const metric = parseAdjacentUsageBlocks(nearbyBlocks(labelBlock));
+  if (metric.usedPercent === null && metric.resetLabel === null && metric.spent === null) return null;
+  return metric;
 }
 
 function collectFallbackPayload(root) {

@@ -5,16 +5,16 @@ import {
   normalizePercent,
   withRefreshFailure,
 } from './shared/model.js';
+import { normalizeResetLabel } from './fallback-parse.js';
 
 const REFRESH_ALARM = 'refresh-usage';
-let inFlightRefresh = null;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
 }
 
 function safeLabel(value) {
-  return typeof value === 'string' && value.trim() ? value.trim().slice(0, 120) : null;
+  return normalizeResetLabel(value);
 }
 
 function normalizeFallbackItem(value, id, label) {
@@ -47,10 +47,12 @@ function normalizeFallbackCredits(value) {
   };
 }
 
-function fallbackState(payload, now = new Date()) {
+export function fallbackState(payload, now = new Date()) {
   if (!isRecord(payload)) return null;
   const session = normalizeFallbackItem(payload.session, 'session', 'Current session');
-  const weekly = normalizeFallbackItem(payload.weekly ?? payload.allModels, 'weekly', 'Weekly limits');
+  const normalizedWeekly = normalizeFallbackItem(payload.weekly, 'weekly', 'Weekly limits');
+  const normalizedAllModels = normalizeFallbackItem(payload.allModels, 'weekly', 'Weekly limits');
+  const weekly = normalizedWeekly ?? normalizedAllModels;
   const credits = normalizeFallbackCredits(payload.credits);
   if (!session && !weekly && !credits) return null;
 
@@ -61,80 +63,121 @@ function fallbackState(payload, now = new Date()) {
   return state;
 }
 
-async function readUsageState() {
-  const stored = await chrome.storage.local.get('usageState');
-  return stored.usageState ?? null;
-}
-
-async function saveUsageState(state) {
-  await chrome.storage.local.set({ usageState: state });
-  const badge = getBadgePresentation(state);
-  await chrome.action.setBadgeText({ text: badge.text });
-  await chrome.action.setBadgeBackgroundColor({ color: badge.color });
-}
-
 function refreshFailure(state) {
   return state.status !== 'ready' && state.status !== 'partial';
 }
 
-export async function refreshUsage() {
-  if (inFlightRefresh) return inFlightRefresh;
+export function createBackgroundController({ chromeApi, fetchImpl, collectUsage = collectClaudeUsage, now = () => new Date() }) {
+  let inFlightRefresh = null;
+  let commitQueue = Promise.resolve();
 
-  inFlightRefresh = (async () => {
-    const state = await collectClaudeUsage(fetch, new Date());
-    const savedState = refreshFailure(state)
-      ? withRefreshFailure(await readUsageState(), state.status, state.diagnostic, new Date())
-      : state;
-    await saveUsageState(savedState);
-    return savedState;
-  })();
-
-  try {
-    return await inFlightRefresh;
-  } finally {
-    inFlightRefresh = null;
+  async function readUsageState() {
+    const stored = await chromeApi.storage.local.get('usageState');
+    return stored.usageState ?? null;
   }
-}
 
-async function initialize() {
-  chrome.alarms.create(REFRESH_ALARM, { periodInMinutes: 2 });
-  const stored = await chrome.storage.local.get('demoEnabled');
-  if (typeof stored.demoEnabled !== 'boolean') {
-    await chrome.storage.local.set({ demoEnabled: false });
+  async function saveUsageState(state) {
+    await chromeApi.storage.local.set({ usageState: state });
+    const badge = getBadgePresentation(state);
+    await chromeApi.action.setBadgeText({ text: badge.text });
+    await chromeApi.action.setBadgeBackgroundColor({ color: badge.color });
   }
-  await refreshUsage();
-}
 
-chrome.runtime.onInstalled.addListener(() => {
-  void initialize();
-});
+  function enqueueCommit(operation) {
+    const commit = commitQueue.then(operation, operation);
+    commitQueue = commit.catch(() => {});
+    return commit;
+  }
 
-chrome.runtime.onStartup.addListener(() => {
-  void initialize();
-});
+  function refreshUsage() {
+    if (inFlightRefresh) return inFlightRefresh;
 
-chrome.alarms.onAlarm.addListener((alarm) => {
-  if (alarm.name === REFRESH_ALARM) void refreshUsage();
-});
-
-chrome.runtime.onMessage.addListener((message, _sender, sendResponse) => {
-  if (message?.type === 'REFRESH_USAGE') {
-    void refreshUsage().then(
-      (state) => sendResponse({ ok: state.status !== 'network-error', state }),
-      () => sendResponse({ ok: false, state: null }),
+    const refresh = (async () => {
+      let state;
+      try {
+        state = await collectUsage(fetchImpl, now());
+      } catch {
+        state = makeEmptyState('network-error', 'NETWORK_FAILURE', now());
+      }
+      return enqueueCommit(async () => {
+        const savedState = refreshFailure(state)
+          ? withRefreshFailure(await readUsageState(), state.status, state.diagnostic, now())
+          : state;
+        await saveUsageState(savedState);
+        return savedState;
+      });
+    })();
+    inFlightRefresh = refresh;
+    void refresh.then(
+      () => {
+        if (inFlightRefresh === refresh) inFlightRefresh = null;
+      },
+      () => {
+        if (inFlightRefresh === refresh) inFlightRefresh = null;
+      },
     );
-    return true;
+    return refresh;
   }
 
-  if (message?.type === 'USAGE_PAGE_FALLBACK') {
-    void (async () => {
-      const state = fallbackState(message.payload);
-      if (!state) return { ok: false };
+  async function waitForInFlightRefresh() {
+    const refresh = inFlightRefresh;
+    return refresh ? refresh : null;
+  }
+
+  async function applyPageFallback(payload) {
+    const state = fallbackState(payload, now());
+    if (!state) return { ok: false };
+    const apiState = await waitForInFlightRefresh();
+    if (apiState && !refreshFailure(apiState)) return { ok: false, state: apiState };
+
+    return enqueueCommit(async () => {
+      const latestApiState = await waitForInFlightRefresh();
+      if (latestApiState && !refreshFailure(latestApiState)) return { ok: false, state: latestApiState };
+      const storedState = await readUsageState();
+      if (storedState?.source === 'api' && !refreshFailure(storedState)) {
+        return { ok: false, state: storedState };
+      }
       await saveUsageState(state);
       return { ok: true, state };
-    })().then(sendResponse, () => sendResponse({ ok: false }));
-    return true;
+    });
   }
 
-  return false;
-});
+  async function initialize() {
+    chromeApi.alarms.create(REFRESH_ALARM, { periodInMinutes: 2 });
+    const stored = await chromeApi.storage.local.get('demoEnabled');
+    if (typeof stored.demoEnabled !== 'boolean') await chromeApi.storage.local.set({ demoEnabled: false });
+    await refreshUsage();
+  }
+
+  return { refreshUsage, applyPageFallback, initialize };
+}
+
+export function registerBackground(chromeApi = chrome, fetchImpl = fetch) {
+  const controller = createBackgroundController({ chromeApi, fetchImpl });
+  chromeApi.runtime.onInstalled.addListener(() => {
+    void controller.initialize().catch(() => {});
+  });
+  chromeApi.runtime.onStartup.addListener(() => {
+    void controller.initialize().catch(() => {});
+  });
+  chromeApi.alarms.onAlarm.addListener((alarm) => {
+    if (alarm.name === REFRESH_ALARM) void controller.refreshUsage().catch(() => {});
+  });
+  chromeApi.runtime.onMessage.addListener((message, _sender, sendResponse) => {
+    if (message?.type === 'REFRESH_USAGE') {
+      void controller.refreshUsage().then(
+        (state) => sendResponse({ ok: state.status !== 'network-error', state }),
+        () => sendResponse({ ok: false, state: null }),
+      );
+      return true;
+    }
+    if (message?.type === 'USAGE_PAGE_FALLBACK') {
+      void controller.applyPageFallback(message.payload).then(sendResponse, () => sendResponse({ ok: false }));
+      return true;
+    }
+    return false;
+  });
+  return controller;
+}
+
+if (typeof chrome !== 'undefined') registerBackground(chrome, fetch);
