@@ -127,7 +127,7 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
   async function applyPageFallback(payload) {
     const state = fallbackState(payload, now());
     if (!state) return { ok: false };
-    const apiState = await waitForInFlightRefresh();
+    const apiState = await (inFlightRefresh ?? refreshUsage());
     if (apiState && !refreshFailure(apiState)) return { ok: false, state: apiState };
 
     return enqueueCommit(async () => {

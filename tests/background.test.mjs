@@ -96,6 +96,39 @@ test('does not replace an already available API result with page fallback data',
   assert.equal(chromeApi.stored.usageState.items.session.usedPercent, 45);
 });
 
+test('starts an API refresh before applying fallback when no refresh is in flight', async () => {
+  const chromeApi = makeChrome();
+  let calls = 0;
+  const unavailable = makeEmptyState('unsupported', 'USAGE_SHAPE_UNRECOGNIZED', new Date('2026-08-17T18:00:00.000Z'));
+  const controller = createBackgroundController({
+    chromeApi,
+    collectUsage: async () => {
+      calls += 1;
+      return unavailable;
+    },
+  });
+
+  const result = await controller.applyPageFallback({ session: { usedPercent: 10, resetLabel: 'Resets in 1 hour' } });
+
+  assert.equal(calls, 1);
+  assert.equal(result.ok, true);
+  assert.equal(chromeApi.stored.usageState.source, 'page');
+});
+
+test('keeps a fresh API result when fallback starts the API refresh', async () => {
+  const chromeApi = makeChrome();
+  const live = makeEmptyState('partial', null, new Date('2026-08-17T18:00:00.000Z'));
+  live.source = 'api';
+  live.items.session = { id: 'session', label: 'Current session', usedPercent: 45, remainingPercent: 55, resetsAt: null, resetLabel: null };
+  const controller = createBackgroundController({ chromeApi, collectUsage: async () => live });
+
+  const result = await controller.applyPageFallback({ session: { usedPercent: 10, resetLabel: 'Resets in 1 hour' } });
+
+  assert.equal(result.ok, false);
+  assert.equal(result.state.source, 'api');
+  assert.equal(chromeApi.stored.usageState.items.session.usedPercent, 45);
+});
+
 test('contains rejected install work inside the registered event handler', async () => {
   const installed = [];
   const chromeApi = {
