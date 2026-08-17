@@ -1,3 +1,5 @@
+import { formatDate, resetText } from './format.js';
+
 const $ = (id) => document.getElementById(id);
 
 const elements = {
@@ -32,25 +34,6 @@ function metricElements(name) {
 
 function isFinitePercentage(value) {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100;
-}
-
-function validDate(value) {
-  const date = new Date(value);
-  return Number.isNaN(date.getTime()) ? null : date;
-}
-
-function formatDate(value, options) {
-  const date = validDate(value);
-  return date ? new Intl.DateTimeFormat(undefined, options).format(date) : null;
-}
-
-function resetText(metric) {
-  const formatted = formatDate(metric?.resetsAt, {
-    weekday: 'long', month: 'short', day: 'numeric', hour: 'numeric', minute: '2-digit',
-  });
-  if (formatted) return `Resets ${formatted}`;
-  if (typeof metric?.resetLabel === 'string' && metric.resetLabel.trim()) return metric.resetLabel.trim();
-  return 'Unavailable';
 }
 
 function formatMoney(value, currency = 'USD') {
