@@ -5,9 +5,11 @@ import {
   normalizePercent,
   withRefreshFailure,
 } from './shared/model.js';
-import { normalizeResetLabel } from './fallback-parse.js';
+import { normalizeResetLabel, resetLabelExpiry } from './fallback-parse.js';
 
 const REFRESH_ALARM = 'refresh-usage';
+const PAGE_RESET_FALLBACK_KEY = 'pageResetFallback';
+const PAGE_RESET_FALLBACK_VERSION = 1;
 
 function isRecord(value) {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -71,6 +73,73 @@ function isAuthoritativeApiState(state) {
   return state?.source === 'api' && state.stale !== true && !refreshFailure(state);
 }
 
+function safeTimestamp(value) {
+  if (typeof value !== 'string' || Number.isNaN(Date.parse(value))) return null;
+  return new Date(value).toISOString();
+}
+
+function pageResetEntry(value, collectedAt) {
+  if (!isRecord(value)) return null;
+  const resetsAt = safeTimestamp(value.resetsAt);
+  const resetLabel = safeLabel(value.resetLabel);
+  const labelExpiry = resetLabel ? resetLabelExpiry(resetLabel, collectedAt) : null;
+  const targets = [resetsAt, labelExpiry].filter(Boolean).map((target) => Date.parse(target));
+  if (targets.length === 0) return null;
+  const expiresAt = new Date(Math.min(...targets)).toISOString();
+  if (Date.parse(expiresAt) <= Date.parse(collectedAt)) return null;
+  return {
+    resetsAt,
+    resetLabel: labelExpiry ? resetLabel : null,
+    expiresAt,
+  };
+}
+
+function makePageResetFallback(pageState) {
+  if (pageState?.source !== 'page') return null;
+  const collectedAt = safeTimestamp(pageState.collectedAt);
+  if (!collectedAt) return null;
+  const session = pageResetEntry(pageState.items?.session, collectedAt);
+  const weekly = pageResetEntry(pageState.items?.weekly, collectedAt);
+  const credits = pageResetEntry(pageState.credits, collectedAt);
+  if (!session && !weekly && !credits) return null;
+  return {
+    version: PAGE_RESET_FALLBACK_VERSION,
+    source: 'page',
+    collectedAt,
+    items: { session, weekly },
+    credits,
+  };
+}
+
+function selectResetEntries(pageState, predicate) {
+  if (!pageState) return null;
+  const session = pageState.items.session && predicate(pageState.items.session) ? pageState.items.session : null;
+  const weekly = pageState.items.weekly && predicate(pageState.items.weekly) ? pageState.items.weekly : null;
+  const credits = pageState.credits && predicate(pageState.credits) ? pageState.credits : null;
+  if (!session && !weekly && !credits) return null;
+  return { ...pageState, items: { session, weekly }, credits };
+}
+
+function validatePageResetFallback(value, at) {
+  const atTimestamp = at instanceof Date ? at.getTime() : Date.parse(at);
+  if (
+    !isRecord(value) ||
+    value.version !== PAGE_RESET_FALLBACK_VERSION ||
+    value.source !== 'page' ||
+    !Number.isFinite(atTimestamp)
+  ) {
+    return { active: null, expired: null };
+  }
+  const normalized = makePageResetFallback(value);
+  if (!normalized || Date.parse(normalized.collectedAt) > atTimestamp) {
+    return { active: null, expired: null };
+  }
+  return {
+    active: selectResetEntries(normalized, (entry) => Date.parse(entry.expiresAt) > atTimestamp),
+    expired: selectResetEntries(normalized, (entry) => Date.parse(entry.expiresAt) <= atTimestamp),
+  };
+}
+
 function enrichResetFields(apiValue, pageValue) {
   if (!isRecord(apiValue) || !isRecord(pageValue)) return apiValue;
   const resetsAt = apiValue.resetsAt ?? pageValue.resetsAt ?? null;
@@ -100,6 +169,24 @@ export function enrichApiStateWithPageFallback(apiState, pageState) {
   };
 }
 
+function removeExpiredPageResetFallback(state, pageState) {
+  if (!isRecord(state) || !pageState) return state;
+
+  function removeExpiredFields(value, expiredValue) {
+    if (!isRecord(value) || !isRecord(expiredValue)) return value;
+    const resetsAt = value.resetsAt === expiredValue.resetsAt ? null : value.resetsAt;
+    const resetLabel = value.resetLabel === expiredValue.resetLabel ? null : value.resetLabel;
+    if (resetsAt === value.resetsAt && resetLabel === value.resetLabel) return value;
+    return { ...value, resetsAt, resetLabel };
+  }
+
+  const session = removeExpiredFields(state.items?.session, pageState.items?.session);
+  const weekly = removeExpiredFields(state.items?.weekly, pageState.items?.weekly);
+  const credits = removeExpiredFields(state.credits, pageState.credits);
+  if (session === state.items?.session && weekly === state.items?.weekly && credits === state.credits) return state;
+  return { ...state, items: { session, weekly }, credits };
+}
+
 export function createBackgroundController({ chromeApi, fetchImpl, collectUsage = collectClaudeUsage, now = () => new Date() }) {
   let inFlightRefresh = null;
   let commitQueue = Promise.resolve();
@@ -114,6 +201,20 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
     const badge = getBadgePresentation(state);
     await chromeApi.action.setBadgeText({ text: badge.text });
     await chromeApi.action.setBadgeBackgroundColor({ color: badge.color });
+  }
+
+  async function savePageResetFallback(state) {
+    await chromeApi.storage.local.set({ [PAGE_RESET_FALLBACK_KEY]: state });
+  }
+
+  async function readPageResetFallback(at) {
+    const stored = await chromeApi.storage.local.get(PAGE_RESET_FALLBACK_KEY);
+    const rawState = stored[PAGE_RESET_FALLBACK_KEY] ?? null;
+    const validated = validatePageResetFallback(rawState, at);
+    if (JSON.stringify(rawState) !== JSON.stringify(validated.active)) {
+      await savePageResetFallback(validated.active);
+    }
+    return validated;
   }
 
   function enqueueCommit(operation) {
@@ -133,9 +234,21 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
         state = makeEmptyState('network-error', 'NETWORK_FAILURE', now());
       }
       return enqueueCommit(async () => {
-        const savedState = refreshFailure(state)
-          ? withRefreshFailure(await readUsageState(), state.status, state.diagnostic, now())
-          : state;
+        const pageResetFallback = await readPageResetFallback(now());
+        let savedState;
+        if (refreshFailure(state)) {
+          const previousState = removeExpiredPageResetFallback(
+            await readUsageState(),
+            pageResetFallback.expired,
+          );
+          const enrichedPreviousState = enrichApiStateWithPageFallback(
+            previousState,
+            pageResetFallback.active,
+          );
+          savedState = withRefreshFailure(enrichedPreviousState, state.status, state.diagnostic, now());
+        } else {
+          savedState = enrichApiStateWithPageFallback(state, pageResetFallback.active);
+        }
         await saveUsageState(savedState);
         return savedState;
       });
@@ -170,6 +283,8 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
   async function applyPageFallback(payload) {
     const state = fallbackState(payload, now());
     if (!state) return { ok: false };
+    const pageResetFallback = makePageResetFallback(state);
+    await enqueueCommit(() => savePageResetFallback(pageResetFallback));
     const cachedApiState = await readUsageState();
     const apiState = await (inFlightRefresh ?? refreshUsage());
     if (apiState && !refreshFailure(apiState)) {

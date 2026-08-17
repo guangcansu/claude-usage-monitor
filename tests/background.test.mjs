@@ -25,6 +25,37 @@ function makeChrome(initialState = null) {
   };
 }
 
+function makeReadyCreditsState(collectedAt, { usedPercent = 56, spent = 28.19, limit = 50 } = {}) {
+  const state = makeEmptyState('ready', null, collectedAt);
+  state.source = 'api';
+  state.items.session = {
+    id: 'session',
+    label: 'Current session',
+    usedPercent: 45,
+    remainingPercent: 55,
+    resetsAt: null,
+    resetLabel: null,
+  };
+  state.items.weekly = {
+    id: 'weekly',
+    label: 'Weekly limits',
+    usedPercent: 27,
+    remainingPercent: 73,
+    resetsAt: null,
+    resetLabel: null,
+  };
+  state.credits = {
+    usedPercent,
+    remainingPercent: 100 - usedPercent,
+    spent,
+    limit,
+    currency: 'USD',
+    resetsAt: null,
+    resetLabel: null,
+  };
+  return state;
+}
+
 test('selects normalized All models data when weekly has no usable percentage', () => {
   const state = fallbackState({
     session: { usedPercent: 45, resetLabel: 'Resets in 2 hours' },
@@ -147,6 +178,143 @@ test('persists and returns API credits enriched with a page reset label through 
   });
   assert.deepEqual(chromeApi.badge.texts.at(-1), { text: '55' });
   assert.equal(chromeApi.badge.colors.length, chromeApi.badge.texts.length);
+});
+
+test('reapplies a persisted page reset after restart while each successful refresh keeps API usage authoritative', async () => {
+  const observedAt = new Date(2026, 7, 17, 13, 0, 0);
+  let apiState = makeReadyCreditsState(observedAt);
+  const chromeApi = makeChrome();
+  const firstController = createBackgroundController({
+    chromeApi,
+    now: () => observedAt,
+    collectUsage: async () => structuredClone(apiState),
+  });
+
+  await firstController.applyPageFallback({
+    credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 1' },
+  });
+
+  apiState = makeReadyCreditsState(observedAt, { usedPercent: 58, spent: 29.25, limit: 50 });
+  const restartedController = createBackgroundController({
+    chromeApi,
+    now: () => observedAt,
+    collectUsage: async () => structuredClone(apiState),
+  });
+  const refreshed = await restartedController.refreshUsage();
+
+  assert.equal(refreshed.source, 'api');
+  assert.deepEqual(refreshed.credits, {
+    usedPercent: 58,
+    remainingPercent: 42,
+    spent: 29.25,
+    limit: 50,
+    currency: 'USD',
+    resetsAt: null,
+    resetLabel: 'Resets Sep 1',
+  });
+  assert.deepEqual(chromeApi.stored.usageState, refreshed);
+});
+
+test('persists only reset fields with page provenance and expires them at the represented reset', async () => {
+  let currentTime = new Date(2026, 7, 17, 13, 0, 0);
+  let apiState = makeReadyCreditsState(currentTime);
+  const chromeApi = makeChrome();
+  const controller = createBackgroundController({
+    chromeApi,
+    now: () => currentTime,
+    collectUsage: async () => structuredClone(apiState),
+  });
+
+  await controller.applyPageFallback({
+    credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 1' },
+  });
+
+  assert.deepEqual(chromeApi.stored.pageResetFallback, {
+    version: 1,
+    source: 'page',
+    collectedAt: currentTime.toISOString(),
+    items: { session: null, weekly: null },
+    credits: {
+      resetsAt: null,
+      resetLabel: 'Resets Sep 1',
+      expiresAt: new Date(2026, 8, 1, 0, 0, 0).toISOString(),
+    },
+  });
+
+  currentTime = new Date(2026, 8, 1, 0, 0, 1);
+  apiState = makeReadyCreditsState(currentTime, { usedPercent: 58, spent: 29.25, limit: 50 });
+  const restartedController = createBackgroundController({
+    chromeApi,
+    now: () => currentTime,
+    collectUsage: async () => structuredClone(apiState),
+  });
+  const refreshed = await restartedController.refreshUsage();
+
+  assert.equal(refreshed.credits.resetLabel, null);
+  assert.equal(chromeApi.stored.pageResetFallback, null);
+});
+
+test('removes an expired page reset from stale API data when the next refresh fails', async () => {
+  let currentTime = new Date(2026, 7, 17, 13, 0, 0);
+  const chromeApi = makeChrome();
+  const controller = createBackgroundController({
+    chromeApi,
+    now: () => currentTime,
+    collectUsage: async () => makeReadyCreditsState(currentTime),
+  });
+
+  await controller.applyPageFallback({
+    credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets Sep 1' },
+  });
+
+  currentTime = new Date(2026, 8, 1, 0, 0, 1);
+  const unavailable = makeEmptyState('network-error', 'NETWORK_FAILURE', currentTime);
+  const restartedController = createBackgroundController({
+    chromeApi,
+    now: () => currentTime,
+    collectUsage: async () => unavailable,
+  });
+  const refreshed = await restartedController.refreshUsage();
+
+  assert.equal(refreshed.stale, true);
+  assert.equal(refreshed.credits.resetLabel, null);
+  assert.equal(chromeApi.stored.pageResetFallback, null);
+});
+
+test('rejects persisted reset fallbacks without safe page provenance or strict reset fields', async () => {
+  const currentTime = new Date(2026, 7, 17, 13, 0, 0);
+  const expiresAt = new Date(2026, 8, 1, 0, 0, 0).toISOString();
+  const unsafeFallbacks = [
+    {
+      version: 1,
+      source: 'api',
+      collectedAt: currentTime.toISOString(),
+      items: { session: null, weekly: null },
+      credits: { resetsAt: null, resetLabel: 'Resets Sep 1', expiresAt },
+    },
+    {
+      version: 1,
+      source: 'page',
+      collectedAt: currentTime.toISOString(),
+      items: { session: null, weekly: null },
+      credits: { resetsAt: null, resetLabel: 'Resets Sep 1 private account text', expiresAt },
+    },
+  ];
+
+  for (const unsafeFallback of unsafeFallbacks) {
+    const chromeApi = makeChrome();
+    chromeApi.stored.pageResetFallback = unsafeFallback;
+    const controller = createBackgroundController({
+      chromeApi,
+      now: () => currentTime,
+      collectUsage: async () => makeReadyCreditsState(currentTime),
+    });
+
+    const refreshed = await controller.refreshUsage();
+
+    assert.equal(refreshed.credits.resetLabel, null);
+    assert.equal(chromeApi.stored.pageResetFallback, null);
+  }
 });
 
 test('deduplicates concurrent API refreshes and does not let a fallback overwrite live API data', async () => {

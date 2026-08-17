@@ -33,6 +33,32 @@ test('accepts the current live reset labels as complete blocks', () => {
   }
 });
 
+test('derives local target expiries for every strict reset-label form retained across refreshes', () => {
+  assert.equal(typeof fallbackParse.resetLabelExpiry, 'function');
+  const observedAt = new Date(2026, 7, 17, 13, 0, 0);
+  const fixtures = [
+    ['Resets in 20 minutes', new Date(2026, 7, 17, 13, 20, 0)],
+    ['Resets in 3 hr 49 min', new Date(2026, 7, 17, 16, 49, 0)],
+    ['Resets at 4:59 PM', new Date(2026, 7, 17, 16, 59, 0)],
+    ['Resets Wed 4:59 PM', new Date(2026, 7, 19, 16, 59, 0)],
+    ['Resets on Wednesday at 4:59 PM', new Date(2026, 7, 19, 16, 59, 0)],
+    ['Resets Sep 1', new Date(2026, 8, 1, 0, 0, 0)],
+    ['Resets on September 1, 2026 at 4:59 PM', new Date(2026, 8, 1, 16, 59, 0)],
+  ];
+
+  for (const [label, expected] of fixtures) {
+    assert.equal(fallbackParse.resetLabelExpiry(label, observedAt), expected.toISOString());
+  }
+});
+
+test('does not derive an expiry by rolling an invalid calendar target into a later date', () => {
+  assert.equal(typeof fallbackParse.resetLabelExpiry, 'function');
+  const observedAt = new Date(2024, 2, 1, 13, 0, 0);
+
+  assert.equal(fallbackParse.resetLabelExpiry('Resets Feb 29', observedAt), null);
+  assert.equal(fallbackParse.resetLabelExpiry('Resets on February 30, 2026', observedAt), null);
+});
+
 test('selects the smallest session ancestor layer containing a metric', () => {
   assert.equal(typeof fallbackParse.selectNearestUsageMetric, 'function');
   const metric = fallbackParse.selectNearestUsageMetric([
