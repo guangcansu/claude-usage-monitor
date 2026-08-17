@@ -11,11 +11,58 @@ function fixture(manifest) {
   mkdirSync(join(root, 'icons'));
   mkdirSync(join(root, 'isolated'));
   writeFileSync(join(root, 'manifest.json'), JSON.stringify(manifest));
+  writeFileSync(join(root, 'README.md'), '# Test extension\n');
   writeFileSync(join(root, 'worker.js'), 'export default null;');
   writeFileSync(join(root, 'popup.html'), '<main></main>');
   writeFileSync(join(root, 'icons', 'icon-16.png'), 'placeholder');
   return root;
 }
+
+test('requires a README for unpacked extension instructions', () => {
+  const root = fixture(baseManifest());
+  try {
+    rmSync(join(root, 'README.md'));
+    assert.throws(() => validateExtension(root), /README\.md is required/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects insecure and non-Claude external origins in executable files', () => {
+  const root = fixture(baseManifest());
+  try {
+    writeFileSync(join(root, 'worker.js'), "const endpoint = 'http://claude.ai/api/organizations';");
+    assert.throws(() => validateExtension(root), /must not contain http:\/\//);
+
+    writeFileSync(join(root, 'worker.js'), "const endpoint = 'https://example.com/api/usage';");
+    assert.throws(() => validateExtension(root), /https:\/\/example\.com/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
+
+test('rejects console logging in collector, background, and content code', () => {
+  for (const relativePath of ['src/collector/unsafe.js', 'src/background.js', 'src/content.js']) {
+    const root = fixture(baseManifest());
+    try {
+      mkdirSync(join(root, 'src', 'collector'), { recursive: true });
+      writeFileSync(join(root, relativePath), "console.log('usage response');");
+      assert.throws(() => validateExtension(root), new RegExp(`${relativePath.replaceAll('/', '\\/')} must not call console\\.log`));
+    } finally {
+      rmSync(root, { recursive: true, force: true });
+    }
+  }
+});
+
+test('limits approved Demo fixture numbers to popup code or tests', () => {
+  const root = fixture(baseManifest());
+  try {
+    writeFileSync(join(root, 'worker.js'), 'const demoSessionUsage = 45;');
+    assert.throws(() => validateExtension(root), /worker\.js must not contain Demo fixture number 45/);
+  } finally {
+    rmSync(root, { recursive: true, force: true });
+  }
+});
 
 function baseManifest() {
   return {

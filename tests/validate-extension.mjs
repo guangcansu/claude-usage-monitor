@@ -4,6 +4,11 @@ import { dirname, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const defaultExtensionRoot = resolve(dirname(fileURLToPath(import.meta.url)), '..');
+const DEMO_FIXTURE_NUMBERS = [45, 55, 27, 73, 56, 44, 28.19, 50];
+const DEMO_FIXTURE_NUMBER_PATTERNS = DEMO_FIXTURE_NUMBERS.map((value) => ({
+  value,
+  pattern: new RegExp(`(?:^|[^\\d.])${String(value).replace('.', '\\.')}(?:$|[^\\d.])`),
+}));
 
 function readText(extensionRoot, relativePath) {
   return readFileSync(resolve(extensionRoot, relativePath), 'utf8');
@@ -52,9 +57,20 @@ function assertSafeSource(extensionRoot, relativePath) {
   assert.doesNotMatch(source, /<all_urls>/i, `${relativePath} must not grant all URL access`);
   assert.doesNotMatch(source, /chrome\.cookies\b/i, `${relativePath} must not access cookies`);
   assert.doesNotMatch(source, /\.innerHTML\b/i, `${relativePath} must not use innerHTML`);
+  assert.doesNotMatch(source, /http:\/\//i, `${relativePath} must not contain http://`);
 
-  for (const match of source.matchAll(/https?:\/\/[^/'"`$\s<]+/g)) {
+  for (const match of source.matchAll(/https:\/\/[^/'"`$\s<]+/gi)) {
     assert.equal(match[0], 'https://claude.ai', `${relativePath} may use only https://claude.ai as an external origin`);
+  }
+
+  if (relativePath === 'src/background.js' || relativePath === 'src/content.js' || relativePath.startsWith('src/collector/')) {
+    assert.doesNotMatch(source, /\bconsole\.log\s*\(/, `${relativePath} must not call console.log`);
+  }
+
+  if (relativePath !== 'popup/popup.js') {
+    for (const { value, pattern } of DEMO_FIXTURE_NUMBER_PATTERNS) {
+      assert.doesNotMatch(source, pattern, `${relativePath} must not contain Demo fixture number ${value}`);
+    }
   }
 }
 
@@ -64,6 +80,7 @@ function relativePath(extensionRoot, fullPath) {
 
 export function validateExtension(extensionRoot = defaultExtensionRoot) {
   const manifestPath = resolve(extensionRoot, 'manifest.json');
+  assert.ok(existsSync(resolve(extensionRoot, 'README.md')), 'README.md is required');
   assert.ok(existsSync(manifestPath), 'manifest.json is required');
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'));
 
