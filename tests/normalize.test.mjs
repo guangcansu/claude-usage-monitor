@@ -75,7 +75,7 @@ test('malformed fields remain null and produce partial data rather than zeroes',
     {
       five_hour: { utilization: '45', resets_at: 'invalid' },
       seven_day: { utilization: 27 },
-      extra_usage: { utilization: 120, used_credits: '28.19', monthly_limit: -1 },
+      extra_usage: { is_enabled: true, utilization: 120, used_credits: '28.19', monthly_limit: -1 },
     },
     COLLECTED_AT,
   );
@@ -100,4 +100,33 @@ test('returns unsupported for an unrecognized usage shape', () => {
   assert.equal(state.items.session, null);
   assert.equal(state.items.weekly, null);
   assert.equal(state.credits, null);
+});
+
+test('returns unsupported when known sections contain no recognized usable metric', () => {
+  const emptySession = normalizeUsage({ five_hour: {} }, COLLECTED_AT);
+  assert.equal(emptySession.status, 'unsupported');
+  assert.equal(emptySession.diagnostic, 'USAGE_SHAPE_UNRECOGNIZED');
+
+  const disabledCredits = normalizeUsage({ extra_usage: { is_enabled: false } }, COLLECTED_AT);
+  assert.equal(disabledCredits.status, 'unsupported');
+  assert.equal(disabledCredits.diagnostic, 'USAGE_SHAPE_UNRECOGNIZED');
+  assert.equal(disabledCredits.credits, null);
+});
+
+test('does not infer that malformed extra-usage enable flags mean enabled', () => {
+  for (const isEnabled of [null, 'true', 1]) {
+    const state = normalizeUsage(
+      {
+        extra_usage: {
+          is_enabled: isEnabled,
+          utilization: 56,
+          used_credits: 28.19,
+          monthly_limit: 50,
+        },
+      },
+      COLLECTED_AT,
+    );
+    assert.equal(state.status, 'unsupported');
+    assert.equal(state.credits, null);
+  }
 });

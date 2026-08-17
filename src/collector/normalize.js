@@ -57,7 +57,7 @@ function normalizeCurrency(value) {
 function normalizeCredits(raw) {
   if (!isRecord(raw)) return null;
   const enabled = firstValue(raw, ['is_enabled', 'isEnabled']);
-  if (enabled === false) return null;
+  if (enabled !== true) return null;
 
   const usedPercent = normalizePercent(firstValue(raw, ['utilization', 'used_percent', 'usedPercent']));
   const spent = normalizeAmount(firstValue(raw, ['used_credits', 'usedCredits']));
@@ -75,11 +75,12 @@ function normalizeCredits(raw) {
   };
 }
 
-function hasRecognizedSection(raw) {
+function hasRecognizedMetric(session, weekly, credits) {
   return Boolean(
-    firstRecord(raw, 'five_hour', 'fiveHour') ||
-      firstRecord(raw, 'seven_day', 'sevenDay') ||
-      firstRecord(raw, 'extra_usage', 'extraUsage'),
+    (session !== null && session.usedPercent !== null) ||
+      (weekly !== null && weekly.usedPercent !== null) ||
+      (credits !== null &&
+        (credits.usedPercent !== null || credits.spent !== null || credits.limit !== null)),
   );
 }
 
@@ -105,11 +106,10 @@ export function normalizeUsage(raw, collectedAt) {
   const sessionRaw = firstRecord(raw, 'five_hour', 'fiveHour');
   const weeklyRaw = firstRecord(raw, 'seven_day', 'sevenDay');
   const creditsRaw = firstRecord(raw, 'extra_usage', 'extraUsage');
-  const recognized = hasRecognizedSection(raw);
-
   const session = normalizeUsageItem(sessionRaw, 'session', 'Current session');
   const weekly = normalizeUsageItem(weeklyRaw, 'weekly', 'Weekly limits');
   const credits = normalizeCredits(creditsRaw);
+  const recognized = hasRecognizedMetric(session, weekly, credits);
   const ready = session !== null && session.usedPercent !== null && weekly !== null && weekly.usedPercent !== null;
   const status = ready ? 'ready' : recognized ? 'partial' : 'unsupported';
   const state = makeEmptyState(status, status === 'unsupported' ? UNSUPPORTED_DIAGNOSTIC : null, collectedAt);
