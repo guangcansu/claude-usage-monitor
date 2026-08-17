@@ -254,6 +254,42 @@ test('persists only reset fields with page provenance and expires them at the re
   assert.equal(chromeApi.stored.pageResetFallback, null);
 });
 
+test('does not restore a page reset that expires while fallback waits for the API refresh', async () => {
+  let currentTime = new Date(2026, 7, 17, 13, 0, 0);
+  let resolveCollection;
+  const collection = new Promise((resolve) => {
+    resolveCollection = resolve;
+  });
+  const chromeApi = makeChrome();
+  const controller = createBackgroundController({
+    chromeApi,
+    now: () => currentTime,
+    collectUsage: () => collection,
+  });
+
+  const application = controller.applyPageFallback({
+    credits: { usedPercent: 99, spent: 99, resetLabel: 'Resets in 1 minute' },
+  });
+  await new Promise((resolve) => setImmediate(resolve));
+  currentTime = new Date(2026, 7, 17, 13, 2, 0);
+  resolveCollection(makeReadyCreditsState(currentTime, { usedPercent: 58, spent: 29.25, limit: 50 }));
+
+  const result = await application;
+
+  assert.equal(result.ok, false);
+  assert.deepEqual(result.state.credits, {
+    usedPercent: 58,
+    remainingPercent: 42,
+    spent: 29.25,
+    limit: 50,
+    currency: 'USD',
+    resetsAt: null,
+    resetLabel: null,
+  });
+  assert.deepEqual(chromeApi.stored.usageState, result.state);
+  assert.equal(chromeApi.stored.pageResetFallback, null);
+});
+
 test('removes an expired page reset from stale API data when the next refresh fails', async () => {
   let currentTime = new Date(2026, 7, 17, 13, 0, 0);
   const chromeApi = makeChrome();

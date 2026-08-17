@@ -270,13 +270,18 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
     return refresh ? refresh : null;
   }
 
-  async function commitApiEnrichment(apiState, pageState) {
+  async function enrichApiStateAtCommit(apiState) {
+    const pageResetFallback = await readPageResetFallback(now());
+    const enrichedState = enrichApiStateWithPageFallback(apiState, pageResetFallback.active);
+    if (enrichedState !== apiState) await saveUsageState(enrichedState);
+    return enrichedState;
+  }
+
+  async function commitApiEnrichment(apiState) {
     return enqueueCommit(async () => {
       const storedState = await readUsageState();
       const currentApiState = isAuthoritativeApiState(storedState) ? storedState : apiState;
-      const enrichedState = enrichApiStateWithPageFallback(currentApiState, pageState);
-      if (enrichedState !== currentApiState) await saveUsageState(enrichedState);
-      return enrichedState;
+      return enrichApiStateAtCommit(currentApiState);
     });
   }
 
@@ -288,22 +293,18 @@ export function createBackgroundController({ chromeApi, fetchImpl, collectUsage 
     const cachedApiState = await readUsageState();
     const apiState = await (inFlightRefresh ?? refreshUsage());
     if (apiState && !refreshFailure(apiState)) {
-      return { ok: false, state: await commitApiEnrichment(apiState, state) };
+      return { ok: false, state: await commitApiEnrichment(apiState) };
     }
     if (isAuthoritativeApiState(cachedApiState)) return { ok: false, state: apiState ?? cachedApiState };
 
     return enqueueCommit(async () => {
       const latestApiState = await waitForInFlightRefresh();
       if (latestApiState && !refreshFailure(latestApiState)) {
-        const enrichedState = enrichApiStateWithPageFallback(latestApiState, state);
-        if (enrichedState !== latestApiState) await saveUsageState(enrichedState);
-        return { ok: false, state: enrichedState };
+        return { ok: false, state: await enrichApiStateAtCommit(latestApiState) };
       }
       const storedState = await readUsageState();
       if (storedState?.source === 'api' && !refreshFailure(storedState)) {
-        const enrichedState = enrichApiStateWithPageFallback(storedState, state);
-        if (enrichedState !== storedState) await saveUsageState(enrichedState);
-        return { ok: false, state: enrichedState };
+        return { ok: false, state: await enrichApiStateAtCommit(storedState) };
       }
       await saveUsageState(state);
       return { ok: true, state };
