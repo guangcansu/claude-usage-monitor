@@ -1,7 +1,7 @@
 {
   "manifest_version": 3,
   "name": "Claude Usage Monitor",
-  "version": "0.1.1",
+  "version": "0.1.2",
   "description": "A private, local view of Claude usage limits.",
   "permissions": ["storage", "alarms"],
   "host_permissions": ["https://claude.ai/*"],
